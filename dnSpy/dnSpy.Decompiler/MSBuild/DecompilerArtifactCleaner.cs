@@ -71,6 +71,7 @@ namespace dnSpy.Decompiler.MSBuild {
 			result = ParameterizedAttribute.Replace(result, "");
 			result = ReplaceCompareString(result);
 			result = ReplaceConversions(result);
+			result = ReplacePrivateImplementationDetails(result);
 			result = ClosureInliner.InlineAll(result);
 			result = EnumeratorDisposalCleaner.CleanAll(result);
 
@@ -88,7 +89,9 @@ namespace dnSpy.Decompiler.MSBuild {
 					break;
 				}
 
-				sb.Append(text, pos, idx - pos);
+				// Strip any fully-qualified VB prefix before "Operators.CompareString("
+				int effectiveStart = StripVBPrefix(text, idx);
+				sb.Append(text, pos, effectiveStart - pos);
 
 				int argsStart = idx + CompareStringPrefix.Length;
 				if (!TryParseCompareString(text, argsStart, out var arg1, out var arg2, out var textCompare, out int closePos)) {
@@ -154,11 +157,47 @@ namespace dnSpy.Decompiler.MSBuild {
 					break;
 				}
 
-				sb.Append(text, pos, bestIdx - pos);
+				// Strip any fully-qualified VB prefix before "Conversions.To"
+				int effectiveStart = StripVBPrefix(text, bestIdx);
+				sb.Append(text, pos, effectiveStart - pos);
 				sb.Append(bestTo);
 				pos = bestIdx + bestFrom!.Length;
 			}
 			return sb.ToString();
+		}
+
+		const string ComputeStringHashCall = "<PrivateImplementationDetails>.ComputeStringHash(";
+
+		static string ReplacePrivateImplementationDetails(string text) {
+			if (text.IndexOf("<PrivateImplementationDetails>", StringComparison.Ordinal) < 0)
+				return text;
+
+			// Replace <PrivateImplementationDetails>.ComputeStringHash(expr)
+			// with ComputeStringHash(expr) — a local helper equivalent
+			text = text.Replace(ComputeStringHashCall, "ComputeStringHash(");
+
+			// Replace any remaining <PrivateImplementationDetails>. references (static array fields etc.)
+			// These fields have hex hash names and can't be meaningfully replaced, so leave a marker
+			text = text.Replace("<PrivateImplementationDetails>.", "/* PrivateImpl */");
+
+			return text;
+		}
+
+		const string VBGlobalPrefix = "global::Microsoft.VisualBasic.CompilerServices.";
+		const string VBPrefix = "Microsoft.VisualBasic.CompilerServices.";
+
+		/// <summary>
+		/// Check if there's a VB CompilerServices namespace prefix before position idx.
+		/// Returns the start of the prefix if found, or idx unchanged.
+		/// </summary>
+		static int StripVBPrefix(string text, int idx) {
+			if (idx >= VBGlobalPrefix.Length &&
+				text.Substring(idx - VBGlobalPrefix.Length, VBGlobalPrefix.Length) == VBGlobalPrefix)
+				return idx - VBGlobalPrefix.Length;
+			if (idx >= VBPrefix.Length &&
+				text.Substring(idx - VBPrefix.Length, VBPrefix.Length) == VBPrefix)
+				return idx - VBPrefix.Length;
+			return idx;
 		}
 
 		static bool TryParseCompareString(string text, int start, out string arg1, out string arg2, out bool textCompare, out int closePos) {

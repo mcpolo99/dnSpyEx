@@ -30,7 +30,53 @@ namespace dnSpy.Decompiler.MSBuild {
 					break;
 				if (bt.FullName == typeFullName)
 					return true;
-				type = bt.ResolveTypeDef();
+				var resolved = bt.ResolveTypeDef();
+				if (resolved is not null) {
+					type = resolved;
+					continue;
+				}
+				// When type can't be resolved (e.g., --no-gac), check well-known inheritance chains
+				return IsKnownSubType(bt.FullName, typeFullName);
+			}
+			return false;
+		}
+
+		static bool IsKnownSubType(string unresolvedType, string targetType) {
+			// Well-known WinForms/Component inheritance chains for when assemblies can't be resolved
+			if (targetType == "System.Windows.Forms.Control") {
+				return unresolvedType == "System.Windows.Forms.Control" ||
+					unresolvedType == "System.Windows.Forms.ScrollableControl" ||
+					unresolvedType == "System.Windows.Forms.ContainerControl" ||
+					unresolvedType == "System.Windows.Forms.Form" ||
+					unresolvedType == "System.Windows.Forms.UserControl" ||
+					unresolvedType == "System.Windows.Forms.Panel" ||
+					unresolvedType == "System.Windows.Forms.Button" ||
+					unresolvedType == "System.Windows.Forms.TextBox" ||
+					unresolvedType == "System.Windows.Forms.Label" ||
+					unresolvedType == "System.Windows.Forms.DataGridView" ||
+					unresolvedType == "System.Windows.Forms.ListView" ||
+					unresolvedType == "System.Windows.Forms.TreeView" ||
+					unresolvedType == "System.Windows.Forms.ToolStrip" ||
+					unresolvedType == "System.Windows.Forms.StatusStrip" ||
+					unresolvedType == "System.Windows.Forms.MenuStrip" ||
+					unresolvedType == "System.Windows.Forms.SplitContainer";
+			}
+			if (targetType == "System.Windows.Forms.Form") {
+				return unresolvedType == "System.Windows.Forms.Form";
+			}
+			if (targetType == "System.Windows.Forms.UserControl") {
+				return unresolvedType == "System.Windows.Forms.UserControl";
+			}
+			if (targetType == "System.ComponentModel.Component") {
+				return unresolvedType == "System.ComponentModel.Component" ||
+					unresolvedType == "System.Windows.Forms.Control" ||
+					unresolvedType == "System.Windows.Forms.ScrollableControl" ||
+					unresolvedType == "System.Windows.Forms.ContainerControl" ||
+					unresolvedType == "System.Windows.Forms.Form" ||
+					unresolvedType == "System.Windows.Forms.UserControl";
+			}
+			if (targetType == "System.Windows.Application") {
+				return unresolvedType == "System.Windows.Application";
 			}
 			return false;
 		}

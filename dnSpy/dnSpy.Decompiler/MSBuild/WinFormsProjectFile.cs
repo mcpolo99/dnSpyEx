@@ -33,7 +33,7 @@ namespace dnSpy.Decompiler.MSBuild {
 		public DecompilationContext DecompilationContext => decompilationContext;
 
 		public WinFormsProjectFile(TypeDef type, string filename, DecompilationContext decompilationContext, IDecompiler decompiler, Func<TextWriter, IDecompilerOutput> createDecompilerOutput)
-			: base(type, filename, decompilationContext, decompiler, createDecompilerOutput) => SubType = "Form";
+			: base(type, filename, decompilationContext, decompiler, createDecompilerOutput) => SubType = DotNetUtils.GetWinFormsSubType(type);
 
 		protected override void Decompile(DecompileContext ctx, IDecompilerOutput output) {
 			if (!decompiler.CanDecompile(DecompilationType.PartialType))
@@ -64,6 +64,18 @@ namespace dnSpy.Decompiler.MSBuild {
 				yield return m;
 				foreach (var f in DotNetUtils.GetFields(m))
 					yield return f;
+				// VB.NET WithEvents: IL calls set_Property; resolve to PropertyDef
+				foreach (var def in DotNetUtils.GetDefs(m)) {
+					if (def is MethodDef md) {
+						var prop = DotNetUtils.GetOwningProperty(md);
+						if (prop is not null && DotNetUtils.IsWithEventsProperty(prop)) {
+							foreach (var d in DotNetUtils.GetMethodsAndSelf(prop))
+								yield return d;
+							foreach (var f in DotNetUtils.GetFields(prop.SetMethod))
+								yield return f;
+						}
+					}
+				}
 			}
 
 			m = GetDispose();
@@ -76,6 +88,16 @@ namespace dnSpy.Decompiler.MSBuild {
 			// Designer-attributed fields and IContainer
 			foreach (var f in DotNetUtils.GetDesignerFields(Type))
 				yield return f;
+
+			// VB.NET WithEvents properties (catch any not referenced by InitializeComponent)
+			foreach (var p in Type.Properties) {
+				if (DotNetUtils.IsWithEventsProperty(p)) {
+					foreach (var d in DotNetUtils.GetMethodsAndSelf(p))
+						yield return d;
+					foreach (var f in DotNetUtils.GetFields(p.SetMethod))
+						yield return f;
+				}
+			}
 		}
 
 		MethodDef? GetInitializeComponent() {

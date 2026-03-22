@@ -38,6 +38,17 @@ namespace dnSpy.Decompiler.MSBuild {
 		public static bool IsWinForm(TypeDef type) =>
 			(IsType(type, "System.Windows.Forms.Control") || IsType(type, "System.ComponentModel.Component")) &&
 			type.Methods.Any(x => x.Name == "InitializeComponent");
+
+		public static string GetWinFormsSubType(TypeDef type) {
+			if (IsType(type, "System.Windows.Forms.Form"))
+				return "Form";
+			if (IsType(type, "System.Windows.Forms.UserControl"))
+				return "UserControl";
+			if (IsType(type, "System.ComponentModel.Component"))
+				return "Component";
+			return "Form";
+		}
+
 		public static bool IsSystemWindowsApplication(TypeDef type) => IsType(type, "System.Windows.Application");
 		public static bool IsStartUpClass(TypeDef type) => type.Module.EntryPoint is not null && type.Module.EntryPoint.DeclaringType == type;
 		public static bool IsUnsafe(ModuleDef module) => module.CustomAttributes.IsDefined("System.Security.UnverifiableCodeAttribute");
@@ -79,6 +90,30 @@ namespace dnSpy.Decompiler.MSBuild {
 				yield return m;
 			foreach (var m in p.OtherMethods)
 				yield return m;
+		}
+
+		public static PropertyDef? GetOwningProperty(MethodDef method) {
+			if (method.DeclaringType is null)
+				return null;
+			foreach (var p in method.DeclaringType.Properties) {
+				foreach (var m in p.GetMethods)
+					if (m == method) return p;
+				foreach (var m in p.SetMethods)
+					if (m == method) return p;
+				foreach (var m in p.OtherMethods)
+					if (m == method) return p;
+			}
+			return null;
+		}
+
+		public static bool IsWithEventsProperty(PropertyDef prop) {
+			if (prop.GetMethod is null || prop.SetMethod is null)
+				return false;
+			if (!prop.GetMethod.CustomAttributes.IsDefined("System.Runtime.CompilerServices.CompilerGeneratedAttribute"))
+				return false;
+			if (!prop.SetMethod.CustomAttributes.IsDefined("System.Runtime.CompilerServices.CompilerGeneratedAttribute"))
+				return false;
+			return prop.SetMethod.ImplAttributes.HasFlag(MethodImplAttributes.Synchronized);
 		}
 	}
 }

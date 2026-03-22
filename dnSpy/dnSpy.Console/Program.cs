@@ -695,6 +695,47 @@ namespace dnSpy_Console {
 			}
 		}
 		readonly HashSet<string> addedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		bool addedFrameworkPaths;
+
+		void AddFrameworkSearchPaths(ModuleDef mod) {
+			if (addedFrameworkPaths)
+				return;
+			addedFrameworkPaths = true;
+
+			// Detect target framework from module references and add reference assembly paths.
+			// This ensures enum types from framework assemblies can be resolved even with --no-gac.
+			var corlib = mod.CorLibTypes.AssemblyRef;
+			if (corlib is null)
+				return;
+
+			// Check if this is a .NET Framework assembly (mscorlib)
+			bool isNetFramework = StringComparer.OrdinalIgnoreCase.Equals(corlib.Name, "mscorlib");
+			if (isNetFramework) {
+				// Add .NET Framework reference assembly paths (highest version first)
+				var refAsmBase = Path.Combine(
+					Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+					"Reference Assemblies", "Microsoft", "Framework", ".NETFramework");
+				if (Directory.Exists(refAsmBase)) {
+					var versions = new[] { "v4.8.1", "v4.8", "v4.7.2", "v4.7.1", "v4.7", "v4.6.2", "v4.6.1", "v4.6", "v4.5.2", "v4.5.1", "v4.5", "v4.0" };
+					foreach (var ver in versions) {
+						var refPath = Path.Combine(refAsmBase, ver);
+						if (Directory.Exists(refPath)) {
+							AddSearchPath(refPath);
+							// Also add Facades subdirectory for type-forwarded assemblies
+							var facadesPath = Path.Combine(refPath, "Facades");
+							if (Directory.Exists(facadesPath))
+								AddSearchPath(facadesPath);
+							break; // Use highest available version
+						}
+					}
+				}
+
+				// Also add the .NET Framework runtime directory as fallback
+				var frameworkDir = Path.GetDirectoryName(typeof(object).Assembly.Location);
+				if (frameworkDir is not null)
+					AddSearchPath(frameworkDir);
+			}
+		}
 
 		void Decompile() {
 			foreach (var dir in asmPaths)

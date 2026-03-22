@@ -56,6 +56,13 @@ namespace dnSpy.Decompiler.MSBuild {
 		};
 
 		public static void CleanFile(string filePath) {
+			// Delete compiler-generated <PrivateImplementationDetails> files entirely
+			string fileName = Path.GetFileName(filePath);
+			if (fileName.IndexOf("PrivateImplementationDetails", StringComparison.OrdinalIgnoreCase) >= 0) {
+				File.Delete(filePath);
+				return;
+			}
+
 			var original = File.ReadAllText(filePath, Encoding.UTF8);
 			var result = original;
 
@@ -65,6 +72,7 @@ namespace dnSpy.Decompiler.MSBuild {
 			result = ReplaceCompareString(result);
 			result = ReplaceConversions(result);
 			result = ClosureInliner.InlineAll(result);
+			result = EnumeratorDisposalCleaner.CleanAll(result);
 
 			if (!string.Equals(original, result, StringComparison.Ordinal))
 				File.WriteAllText(filePath, result, new UTF8Encoding(true));

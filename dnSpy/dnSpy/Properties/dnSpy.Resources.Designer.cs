@@ -2070,7 +2070,16 @@ namespace dnSpy.Properties {
                 return ResourceManager.GetString("ExportToProject_UseSDKStyleProjectFormat", resourceCulture);
             }
         }
-        
+
+        /// <summary>
+        ///   Looks up a localized string similar to Improved WinForms export.
+        /// </summary>
+        public static string ExportToProject_ImprovedFormsExport {
+            get {
+                return ResourceManager.GetString("ExportToProject_ImprovedFormsExport", resourceCulture);
+            }
+        }
+
         /// <summary>
         ///   Looks up a localized string similar to Export to Pro_ject....
         /// </summary>

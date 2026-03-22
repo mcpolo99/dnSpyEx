@@ -160,6 +160,17 @@ namespace dnSpy.Documents.Tabs.Dialogs {
 		}
 		bool useSDKStyleProjectFormat;
 
+		public bool ImprovedFormsExport {
+			get => improvedFormsExport;
+			set {
+				if (improvedFormsExport != value) {
+					improvedFormsExport = value;
+					OnPropertyChanged(nameof(ImprovedFormsExport));
+				}
+			}
+		}
+		bool improvedFormsExport;
+
 		public bool OpenProject {
 			get => openProject;
 			set {

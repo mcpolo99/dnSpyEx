@@ -31,6 +31,7 @@ namespace dnSpy.Decompiler.MSBuild {
 		public override string Description => dnSpy_Decompiler_Resources.MSBuild_CreateWinFormsFile;
 		public IDecompiler Decompiler => decompiler;
 		public DecompilationContext DecompilationContext => decompilationContext;
+		public bool ImprovedExport { get; set; }
 
 		public WinFormsProjectFile(TypeDef type, string filename, DecompilationContext decompilationContext, IDecompiler decompiler, Func<TextWriter, IDecompilerOutput> createDecompilerOutput)
 			: base(type, filename, decompilationContext, decompiler, createDecompilerOutput) => SubType = DotNetUtils.GetWinFormsSubType(type);
@@ -64,15 +65,17 @@ namespace dnSpy.Decompiler.MSBuild {
 				yield return m;
 				foreach (var f in DotNetUtils.GetFields(m))
 					yield return f;
-				// VB.NET WithEvents: IL calls set_Property; resolve to PropertyDef
-				foreach (var def in DotNetUtils.GetDefs(m)) {
-					if (def is MethodDef md) {
-						var prop = DotNetUtils.GetOwningProperty(md);
-						if (prop is not null && DotNetUtils.IsWithEventsProperty(prop)) {
-							foreach (var d in DotNetUtils.GetMethodsAndSelf(prop))
-								yield return d;
-							foreach (var f in DotNetUtils.GetFields(prop.SetMethod))
-								yield return f;
+				if (ImprovedExport) {
+					// VB.NET WithEvents: IL calls set_Property; resolve to PropertyDef
+					foreach (var def in DotNetUtils.GetDefs(m)) {
+						if (def is MethodDef md) {
+							var prop = DotNetUtils.GetOwningProperty(md);
+							if (prop is not null && DotNetUtils.IsWithEventsProperty(prop)) {
+								foreach (var d in DotNetUtils.GetMethodsAndSelf(prop))
+									yield return d;
+								foreach (var f in DotNetUtils.GetFields(prop.SetMethod))
+									yield return f;
+							}
 						}
 					}
 				}
@@ -85,17 +88,19 @@ namespace dnSpy.Decompiler.MSBuild {
 					yield return f;
 			}
 
-			// Designer-attributed fields and IContainer
-			foreach (var f in DotNetUtils.GetDesignerFields(Type))
-				yield return f;
+			if (ImprovedExport) {
+				// Designer-attributed fields and IContainer
+				foreach (var f in DotNetUtils.GetDesignerFields(Type))
+					yield return f;
 
-			// VB.NET WithEvents properties (catch any not referenced by InitializeComponent)
-			foreach (var p in Type.Properties) {
-				if (DotNetUtils.IsWithEventsProperty(p)) {
-					foreach (var d in DotNetUtils.GetMethodsAndSelf(p))
-						yield return d;
-					foreach (var f in DotNetUtils.GetFields(p.SetMethod))
-						yield return f;
+				// VB.NET WithEvents properties (catch any not referenced by InitializeComponent)
+				foreach (var p in Type.Properties) {
+					if (DotNetUtils.IsWithEventsProperty(p)) {
+						foreach (var d in DotNetUtils.GetMethodsAndSelf(p))
+							yield return d;
+						foreach (var f in DotNetUtils.GetFields(p.SetMethod))
+							yield return f;
+					}
 				}
 			}
 		}
@@ -159,12 +164,14 @@ namespace dnSpy.Decompiler.MSBuild {
 						opts.Definitions.Add(d);
 					opts.ShowDefinitions = true;
 					opts.UseUsingDeclarations = false;
-					// Collect WithEvents properties for transformation to simple fields
-					var withEvents = new HashSet<PropertyDef>(
-						winFormsFile.GetDefsToRemove().OfType<PropertyDef>()
-							.Where(p => DotNetUtils.IsWithEventsProperty(p)));
-					if (withEvents.Count > 0)
-						opts.WithEventsProperties = withEvents;
+					if (winFormsFile.ImprovedExport) {
+						// Collect WithEvents properties for transformation to simple fields
+						var withEvents = new HashSet<PropertyDef>(
+							winFormsFile.GetDefsToRemove().OfType<PropertyDef>()
+								.Where(p => DotNetUtils.IsWithEventsProperty(p)));
+						if (withEvents.Count > 0)
+							opts.WithEventsProperties = withEvents;
+					}
 					winFormsFile.Decompiler.Decompile(DecompilationType.PartialType, opts);
 				}
 			}

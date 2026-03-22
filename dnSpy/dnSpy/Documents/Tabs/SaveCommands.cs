@@ -184,6 +184,7 @@ namespace dnSpy.Documents.Tabs {
 							UnpackResources = vm.UnpackResources,
 							CreateResX = vm.CreateResX,
 							DecompileXaml = vm.DecompileXaml,
+							ImprovedFormsExport = vm.ImprovedFormsExport,
 							ProjectGuid = hasProjectGuid ? new Guid(string.Format(guidFormat!, guidNum++)) : Guid.NewGuid(),
 						};
 						if (bamlDecompiler is not null) {

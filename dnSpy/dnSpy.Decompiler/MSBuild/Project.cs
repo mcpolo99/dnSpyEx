@@ -212,12 +212,15 @@ namespace dnSpy.Decompiler.MSBuild {
 
 			const string DESIGNER = ".Designer";
 			var resxFile = TryGetResXFile(type);
-			if (DotNetUtils.IsWinForm(type)) {
+			if (Options.ImprovedFormsExport ? DotNetUtils.IsWinFormImproved(type) : DotNetUtils.IsWinForm(type)) {
 				var fname = resxFile is not null ? Path.GetFileNameWithoutExtension(resxFile.Filename) : type.Name.String;
 				var filename = filenameCreator.CreateFromNamespaceName(GetTypeExtension(type), type.ReflectionNamespace, fname);
 				var dname = filenameCreator.CreateFromNamespaceName(GetTypeExtension(type), type.ReflectionNamespace, fname + DESIGNER);
 
 				var newFile = new WinFormsProjectFile(type, filename, Options.DecompilationContext, Options.Decompiler, createDecompilerOutput);
+				newFile.ImprovedExport = Options.ImprovedFormsExport;
+				if (!Options.ImprovedFormsExport)
+					newFile.SubType = "Form";
 				if (resxFile is not null)
 					resxFile.DependentUpon = newFile;
 				var winFormsDesignerFile = new WinFormsDesignerProjectFile(newFile, dname, createDecompilerOutput);

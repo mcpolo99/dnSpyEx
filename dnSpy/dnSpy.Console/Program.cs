@@ -173,6 +173,7 @@ namespace dnSpy_Console {
 		bool decompileBaml = true;
 		bool colorizeOutput;
 		bool sdkProject;
+		bool improvedFormsExport;
 		Guid projectGuid = Guid.NewGuid();
 		int numThreads;
 		int mdToken;
@@ -333,6 +334,7 @@ namespace dnSpy_Console {
 		}
 		static readonly UsageInfo[] usageInfos = new UsageInfo[] {
 			new UsageInfo("--sdk-project", null, dnSpy_Console_Resources.CmdLineDescription_SdkProject),
+			new UsageInfo("--improved-forms", null, "improved WinForms export with proper SubType, designer fields, and WithEvents transform"),
 			new UsageInfo("--asm-path", dnSpy_Console_Resources.CmdLinePath, dnSpy_Console_Resources.CmdLineDescription_AsmPath),
 			new UsageInfo("--user-gac", dnSpy_Console_Resources.CmdLinePath, dnSpy_Console_Resources.CmdLineDescription_UserGAC),
 			new UsageInfo("--no-gac", null, dnSpy_Console_Resources.CmdLineDescription_NoGAC),
@@ -447,6 +449,7 @@ namespace dnSpy_Console {
 			"md",
 			"gac-file",
 			"project-guid",
+			"improved-forms",
 		};
 
 		void ParseCommandLine(string[] args) {
@@ -484,6 +487,10 @@ namespace dnSpy_Console {
 					
 					case "--sdk-project":
 						sdkProject = true;
+						break;
+
+					case "--improved-forms":
+						improvedFormsExport = true;
 						break;
 
 					case "-o":
@@ -965,6 +972,7 @@ namespace dnSpy_Console {
 			proj.UnpackResources = unpackResources;
 			proj.CreateResX = createResX;
 			proj.DecompileXaml = decompileBaml && bamlDecompiler is not null;
+			proj.ImprovedFormsExport = improvedFormsExport;
 			var o = BamlDecompilerOptions.Create(GetLanguage());
 			var outputOptions = new XamlOutputOptions {
 				IndentChars = "\t",

@@ -36,6 +36,10 @@ namespace dnSpy.Decompiler.MSBuild {
 		}
 
 		public static bool IsWinForm(TypeDef type) =>
+			IsType(type, "System.Windows.Forms.Control") &&
+			type.Methods.Any(x => x.Name == "InitializeComponent");
+
+		public static bool IsWinFormImproved(TypeDef type) =>
 			(IsType(type, "System.Windows.Forms.Control") || IsType(type, "System.ComponentModel.Component")) &&
 			type.Methods.Any(x => x.Name == "InitializeComponent");
 

@@ -74,6 +74,11 @@ namespace dnSpy.Decompiler.MSBuild {
 		public bool DecompileXaml { get; set; }
 
 		/// <summary>
+		/// true to use improved Windows Forms export logic. Default value is false.
+		/// </summary>
+		public bool ImprovedFormsExport { get; set; }
+
+		/// <summary>
 		/// Decompiles type name from baml data
 		/// </summary>
 		public Func<ModuleDef, byte[], CancellationToken, string?>? DecompileBamlTypeName;

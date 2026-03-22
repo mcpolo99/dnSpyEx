@@ -58,6 +58,12 @@ namespace dnSpy.Contracts.Decompiler {
 		public List<ITypeDefOrRef> InterfacesToRemove { get; }
 
 		/// <summary>
+		/// If non-null, contains WithEvents properties that should be transformed to simple field declarations
+		/// in the Designer.cs output. The transform also injects event subscriptions into InitializeComponent.
+		/// </summary>
+		public HashSet<PropertyDef>? WithEventsProperties { get; set; }
+
+		/// <summary>
 		/// Constructor
 		/// </summary>
 		/// <param name="output">Output</param>

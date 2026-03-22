@@ -159,6 +159,12 @@ namespace dnSpy.Decompiler.MSBuild {
 						opts.Definitions.Add(d);
 					opts.ShowDefinitions = true;
 					opts.UseUsingDeclarations = false;
+					// Collect WithEvents properties for transformation to simple fields
+					var withEvents = new HashSet<PropertyDef>(
+						winFormsFile.GetDefsToRemove().OfType<PropertyDef>()
+							.Where(p => DotNetUtils.IsWithEventsProperty(p)));
+					if (withEvents.Count > 0)
+						opts.WithEventsProperties = withEvents;
 					winFormsFile.Decompiler.Decompile(DecompilationType.PartialType, opts);
 				}
 			}

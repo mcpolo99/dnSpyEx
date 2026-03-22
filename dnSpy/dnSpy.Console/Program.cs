@@ -967,6 +967,7 @@ namespace dnSpy_Console {
 			mod.EnableTypeDefFindCache = true;
 			((AssemblyResolver)moduleContext.AssemblyResolver).AddToCache(mod);
 			AddSearchPath(Path.GetDirectoryName(mod.Location)!);
+			AddFrameworkSearchPaths(mod);
 			var proj = new ProjectModuleOptions(mod, GetLanguage(), decompilationContext);
 			proj.DontReferenceStdLib = !addCorlibRef;
 			proj.UnpackResources = unpackResources;

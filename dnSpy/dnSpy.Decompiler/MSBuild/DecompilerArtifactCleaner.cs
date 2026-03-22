@@ -64,6 +64,7 @@ namespace dnSpy.Decompiler.MSBuild {
 			result = ParameterizedAttribute.Replace(result, "");
 			result = ReplaceCompareString(result);
 			result = ReplaceConversions(result);
+			result = ClosureInliner.InlineAll(result);
 
 			if (!string.Equals(original, result, StringComparison.Ordinal))
 				File.WriteAllText(filePath, result, new UTF8Encoding(true));

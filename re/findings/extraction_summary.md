@@ -1,8 +1,8 @@
 # Extraction Summary — StackStore
 
-**Date**: 2026-03-22 22:56
+**Date**: 2026-03-22 23:13
 **Source**: `S:\02Development\995Repositories\dnSpy\temp\target\WINSTORE\StackStore.dll`
-**Decompiled to**: `temp\decompiled_test11\shared_csproj\StackStore`
+**Decompiled to**: `temp\decompiled_test12\shared_csproj\StackStore`
 
 ## Stats
 - C# files: 61
@@ -11,4 +11,4 @@
 - WPF detected: False
 
 ## Next Step
-Run: `python .re/scripts/fix_ilspycmd_structure.py -s temp\decompiled_test11\shared_csproj\StackStore`
+Run: `python .re/scripts/fix_ilspycmd_structure.py -s temp\decompiled_test12\shared_csproj\StackStore`

@@ -35,11 +35,24 @@ namespace dnSpy.Decompiler.MSBuild {
 			return false;
 		}
 
-		public static bool IsWinForm(TypeDef type) => IsType(type, "System.Windows.Forms.Control") && type.Methods.Any(x => x.Name == "InitializeComponent");
+		public static bool IsWinForm(TypeDef type) =>
+			(IsType(type, "System.Windows.Forms.Control") || IsType(type, "System.ComponentModel.Component")) &&
+			type.Methods.Any(x => x.Name == "InitializeComponent");
 		public static bool IsSystemWindowsApplication(TypeDef type) => IsType(type, "System.Windows.Application");
 		public static bool IsStartUpClass(TypeDef type) => type.Module.EntryPoint is not null && type.Module.EntryPoint.DeclaringType == type;
 		public static bool IsUnsafe(ModuleDef module) => module.CustomAttributes.IsDefined("System.Security.UnverifiableCodeAttribute");
 		public static IEnumerable<FieldDef> GetFields(MethodDef method) => GetDefs(method).OfType<FieldDef>();
+
+		public static IEnumerable<FieldDef> GetDesignerFields(TypeDef type) {
+			foreach (var f in type.Fields) {
+				if (f.CustomAttributes.IsDefined("System.ComponentModel.DesignerSerializationVisibilityAttribute") ||
+					f.CustomAttributes.IsDefined("System.CodeDom.Compiler.GeneratedCodeAttribute"))
+					yield return f;
+				// IContainer components field
+				if (f.FieldType.RemovePinnedAndModifiers()?.FullName == "System.ComponentModel.IContainer")
+					yield return f;
+			}
+		}
 
 		public static IEnumerable<IMemberDef> GetDefs(MethodDef method) {
 			var body = method.Body;

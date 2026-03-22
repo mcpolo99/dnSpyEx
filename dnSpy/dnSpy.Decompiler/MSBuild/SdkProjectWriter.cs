@@ -69,7 +69,8 @@ namespace dnSpy.Decompiler.MSBuild {
 
 				var possibleProjectTypes = GetPossibleProjectTypes();
 				var projectType = DetermineProjectType(possibleProjectTypes);
-				writer.WriteAttributeString("Sdk", GetSdkString(projectType));
+				var targetFrameworkInfo = TargetFrameworkInfo.Create(project.Module);
+				writer.WriteAttributeString("Sdk", GetSdkString(projectType, targetFrameworkInfo));
 
 				writer.WriteStartElement("PropertyGroup");
 
@@ -83,7 +84,6 @@ namespace dnSpy.Decompiler.MSBuild {
 
 				writer.WriteElementString("FileAlignment", GetFileAlignment());
 
-				var targetFrameworkInfo = TargetFrameworkInfo.Create(project.Module);
 				var moniker = targetFrameworkInfo.GetTargetFrameworkMoniker();
 				if (moniker is null)
 					throw new NotSupportedException("This assembly cannot be decompiled to a SDK style project.");
@@ -243,10 +243,13 @@ namespace dnSpy.Decompiler.MSBuild {
 			writer.WriteEndElement();
 		}
 
-		static string GetSdkString(ProjectType projectType) {
+		static string GetSdkString(ProjectType projectType, TargetFrameworkInfo targetFrameworkInfo) {
 			switch (projectType) {
 			case ProjectType.WinForms:
 			case ProjectType.Wpf:
+				if (targetFrameworkInfo.Framework == ".NETCoreApp" &&
+					Version.TryParse(targetFrameworkInfo.Version, out var ver) && ver.Major >= 5)
+					return "Microsoft.NET.Sdk";
 				return "Microsoft.NET.Sdk.WindowsDesktop";
 			case ProjectType.Web:
 				return "Microsoft.NET.Sdk.Web";

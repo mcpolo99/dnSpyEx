@@ -72,6 +72,10 @@ namespace dnSpy.Decompiler.MSBuild {
 				foreach (var f in DotNetUtils.GetFields(m))
 					yield return f;
 			}
+
+			// Designer-attributed fields and IContainer
+			foreach (var f in DotNetUtils.GetDesignerFields(Type))
+				yield return f;
 		}
 
 		MethodDef? GetInitializeComponent() {

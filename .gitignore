@@ -11,3 +11,5 @@ launchSettings.json
 .claude-flow
 CLAUDE.md
 .mcp.json
+.swarm
+context.CLAUDE.md

@@ -18,6 +18,7 @@
 */
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -28,19 +29,41 @@ namespace dnSpy.Decompiler.MSBuild {
 			@"^[ \t]*// (?:\([^)]+\) )?Token: 0x[0-9A-Fa-f]+ RID: \d+.*\r?\n",
 			RegexOptions.Multiline | RegexOptions.Compiled);
 
-		static readonly Regex DecompilerAttribute = new Regex(
-			@"^[ \t]*\[(CompilerGenerated|DebuggerNonUserCode|DebuggerStepThrough)\]\s*\r?\n",
+		static readonly Regex SimpleAttribute = new Regex(
+			@"^[ \t]*\[(CompilerGenerated|DebuggerNonUserCode|DebuggerStepThrough|DesignerGenerated|DebuggerHidden)\]\s*\r?\n",
+			RegexOptions.Multiline | RegexOptions.Compiled);
+
+		static readonly Regex ParameterizedAttribute = new Regex(
+			@"^[ \t]*\[(MethodImpl\(32\)|EditorBrowsable\([^)]+\)|GeneratedCode\([^]]*\))\]\s*\r?\n",
 			RegexOptions.Multiline | RegexOptions.Compiled);
 
 		const string CompareStringPrefix = "Operators.CompareString(";
+
+		static readonly Dictionary<string, string> ConversionsMap = new Dictionary<string, string> {
+			{ "Conversions.ToBoolean(", "Convert.ToBoolean(" },
+			{ "Conversions.ToInteger(", "Convert.ToInt32(" },
+			{ "Conversions.ToLong(", "Convert.ToInt64(" },
+			{ "Conversions.ToDecimal(", "Convert.ToDecimal(" },
+			{ "Conversions.ToDouble(", "Convert.ToDouble(" },
+			{ "Conversions.ToSingle(", "Convert.ToSingle(" },
+			{ "Conversions.ToByte(", "Convert.ToByte(" },
+			{ "Conversions.ToShort(", "Convert.ToInt16(" },
+			{ "Conversions.ToDate(", "Convert.ToDateTime(" },
+			{ "Conversions.ToChar(", "Convert.ToChar(" },
+			{ "Conversions.ToUInteger(", "Convert.ToUInt32(" },
+			{ "Conversions.ToUShort(", "Convert.ToUInt16(" },
+			{ "Conversions.ToULong(", "Convert.ToUInt64(" },
+		};
 
 		public static void CleanFile(string filePath) {
 			var original = File.ReadAllText(filePath, Encoding.UTF8);
 			var result = original;
 
 			result = TokenComment.Replace(result, "");
-			result = DecompilerAttribute.Replace(result, "");
+			result = SimpleAttribute.Replace(result, "");
+			result = ParameterizedAttribute.Replace(result, "");
 			result = ReplaceCompareString(result);
+			result = ReplaceConversions(result);
 
 			if (!string.Equals(original, result, StringComparison.Ordinal))
 				File.WriteAllText(filePath, result, new UTF8Encoding(true));
@@ -65,7 +88,6 @@ namespace dnSpy.Decompiler.MSBuild {
 					continue;
 				}
 
-				// Check what follows the closing paren: == 0, != 0
 				int afterClose = closePos + 1;
 				int ws = afterClose;
 				while (ws < text.Length && (text[ws] == ' ' || text[ws] == '\t'))
@@ -98,34 +120,61 @@ namespace dnSpy.Decompiler.MSBuild {
 			return sb.ToString();
 		}
 
+		static string ReplaceConversions(string text) {
+			if (text.IndexOf("Conversions.To", StringComparison.Ordinal) < 0)
+				return text;
+
+			var sb = new StringBuilder(text.Length);
+			int pos = 0;
+			while (pos < text.Length) {
+				int bestIdx = -1;
+				string? bestFrom = null;
+				string? bestTo = null;
+
+				foreach (var kv in ConversionsMap) {
+					int idx = text.IndexOf(kv.Key, pos, StringComparison.Ordinal);
+					if (idx >= 0 && (bestIdx < 0 || idx < bestIdx)) {
+						bestIdx = idx;
+						bestFrom = kv.Key;
+						bestTo = kv.Value;
+					}
+				}
+
+				if (bestIdx < 0) {
+					sb.Append(text, pos, text.Length - pos);
+					break;
+				}
+
+				sb.Append(text, pos, bestIdx - pos);
+				sb.Append(bestTo);
+				pos = bestIdx + bestFrom!.Length;
+			}
+			return sb.ToString();
+		}
+
 		static bool TryParseCompareString(string text, int start, out string arg1, out string arg2, out bool textCompare, out int closePos) {
 			arg1 = arg2 = "";
 			textCompare = false;
 			closePos = 0;
 
-			// Parse first argument (balanced parens until comma at depth 0)
 			if (!TryReadArg(text, start, out arg1, out int afterArg1))
 				return false;
 
-			// Skip ", "
 			if (afterArg1 >= text.Length || text[afterArg1] != ',')
 				return false;
 			int next = afterArg1 + 1;
 			while (next < text.Length && text[next] == ' ')
 				next++;
 
-			// Parse second argument
 			if (!TryReadArg(text, next, out arg2, out int afterArg2))
 				return false;
 
-			// Skip ", "
 			if (afterArg2 >= text.Length || text[afterArg2] != ',')
 				return false;
 			next = afterArg2 + 1;
 			while (next < text.Length && text[next] == ' ')
 				next++;
 
-			// Parse third argument: "false" or "true"
 			if (next + 5 <= text.Length && text.Substring(next, 5) == "false") {
 				textCompare = false;
 				next += 5;
@@ -137,7 +186,6 @@ namespace dnSpy.Decompiler.MSBuild {
 			else
 				return false;
 
-			// Expect closing paren
 			if (next >= text.Length || text[next] != ')')
 				return false;
 

@@ -110,6 +110,19 @@ namespace dnSpy.Decompiler.MSBuild {
 					}
 					progressListener.SetProgress(Interlocked.Increment(ref totalProgress));
 				});
+				if (options.ProjectModules.Any(m => m.ImprovedFormsExport)) {
+					var compileFiles = projects
+						.SelectMany(p => p.Files)
+						.Where(f => f.BuildAction == BuildAction.Compile && File.Exists(f.Filename))
+						.Select(f => f.Filename)
+						.ToArray();
+					Parallel.ForEach(compileFiles, opts, file => {
+						options.CancellationToken.ThrowIfCancellationRequested();
+						try { DecompilerArtifactCleaner.CleanFile(file); }
+						catch (OperationCanceledException) { throw; }
+						catch { }
+					});
+				}
 				Parallel.ForEach(projects, opts, p => {
 					options.CancellationToken.ThrowIfCancellationRequested();
 					try {

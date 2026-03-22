@@ -69,11 +69,14 @@ namespace dnSpy.Decompiler.MSBuild {
 			result = TokenComment.Replace(result, "");
 			result = SimpleAttribute.Replace(result, "");
 			result = ParameterizedAttribute.Replace(result, "");
+			result = StripGlobalPrefix(result);
 			result = ReplaceCompareString(result);
 			result = ReplaceConversions(result);
 			result = ReplacePrivateImplementationDetails(result);
 			result = ClosureInliner.InlineAll(result);
 			result = EnumeratorDisposalCleaner.CleanAll(result);
+			// HashSwitchReconstructor disabled — needs label boundary detection fix
+			// result = HashSwitchReconstructor.ReconstructAll(result);
 
 			if (!string.Equals(original, result, StringComparison.Ordinal))
 				File.WriteAllText(filePath, result, new UTF8Encoding(true));
@@ -181,6 +184,16 @@ namespace dnSpy.Decompiler.MSBuild {
 			text = text.Replace("<PrivateImplementationDetails>.", "/* PrivateImpl */");
 
 			return text;
+		}
+
+		/// <summary>
+		/// Remove all "global::" prefixes. These are C# namespace disambiguation markers
+		/// that the decompiler emits but are unnecessary noise in decompiled output.
+		/// </summary>
+		static string StripGlobalPrefix(string text) {
+			if (text.IndexOf("global::", StringComparison.Ordinal) < 0)
+				return text;
+			return text.Replace("global::", "");
 		}
 
 		const string VBGlobalPrefix = "global::Microsoft.VisualBasic.CompilerServices.";

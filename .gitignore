@@ -7,3 +7,7 @@ _ReSharper*/
 *_wpftmp.csproj
 launchSettings.json
 .idea/
+.claude
+.claude-flow
+CLAUDE.md
+.mcp.json

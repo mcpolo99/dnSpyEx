@@ -24,30 +24,25 @@ using System.Text.RegularExpressions;
 
 namespace dnSpy.Decompiler.MSBuild {
 	/// <summary>
-	/// Converts VB.NET hash-based switch-on-string patterns from if/else trees to switch statements.
-	/// Pattern: ComputeStringHash(var) + binary search if/else tree with string.Equals guards + goto labels.
+	/// Converts VB.NET hash-based switch-on-string patterns to switch statements.
+	/// Uses brace-depth tracking to stay within the containing scope (method/foreach body).
 	/// </summary>
 	static class HashSwitchReconstructor {
 		const string ComputeStringHashMarker = "ComputeStringHash(";
 
-		// Matches: uint num = ComputeStringHash(VARNAME);
 		static readonly Regex HashAssignment = new Regex(
-			@"^([ \t]*)uint\s+(\w+)\s*=\s*ComputeStringHash\((\w+)\);\s*$",
+			@"^([ \t]*)uint\s+(\w+)\s*=\s*(?:\S+\.)?ComputeStringHash\((\w+)\);\s*$",
 			RegexOptions.Multiline | RegexOptions.Compiled);
 
-		// Matches: if (!string.Equals(VARNAME, "LITERAL", StringComparison.Ordinal))
-		// or: if (string.Equals(VARNAME, "LITERAL", StringComparison.Ordinal))
-		static readonly Regex StringEqualsCheck = new Regex(
-			@"string\.Equals\(\w+,\s*""([^""]*)"",\s*StringComparison\.Ordinal(?:IgnoreCase)?\)",
+		static readonly Regex StringEqualsLiteral = new Regex(
+			@"string\.Equals\(\w+,\s*""([^""]*)"",\s*StringComparison\.\w+\)",
 			RegexOptions.Compiled);
 
-		// Matches: goto IL_XXXX;
-		static readonly Regex GotoLabel = new Regex(
+		static readonly Regex GotoStmt = new Regex(
 			@"goto\s+(IL_[0-9A-Fa-f]+);",
 			RegexOptions.Compiled);
 
-		// Matches label definitions: IL_XXXX:
-		static readonly Regex LabelDef = new Regex(
+		static readonly Regex LabelLine = new Regex(
 			@"^([ \t]*)(IL_[0-9A-Fa-f]+):\s*$",
 			RegexOptions.Multiline | RegexOptions.Compiled);
 
@@ -55,194 +50,212 @@ namespace dnSpy.Decompiler.MSBuild {
 			if (text.IndexOf(ComputeStringHashMarker, StringComparison.Ordinal) < 0)
 				return text;
 
-			// Find each ComputeStringHash assignment
-			var match = HashAssignment.Match(text);
-			while (match.Success) {
-				string indent = match.Groups[1].Value;
-				string hashVar = match.Groups[2].Value;
-				string switchVar = match.Groups[3].Value;
-				int hashLineStart = match.Index;
-				int hashLineEnd = match.Index + match.Length;
+			bool changed = true;
+			while (changed) {
+				changed = false;
+				var match = HashAssignment.Match(text);
+				while (match.Success) {
+					string indent = match.Groups[1].Value;
+					string hashVar = match.Groups[2].Value;
+					string switchVar = match.Groups[3].Value;
 
-				// Skip past newline after hash assignment
-				while (hashLineEnd < text.Length && (text[hashLineEnd] == '\r' || text[hashLineEnd] == '\n'))
-					hashLineEnd++;
+					int hashLineStart = FindLineStart(text, match.Index);
+					int hashLineEnd = match.Index + match.Length;
+					while (hashLineEnd < text.Length && (text[hashLineEnd] == '\r' || text[hashLineEnd] == '\n'))
+						hashLineEnd++;
 
-				// The if/else tree starts at hashLineEnd
-				// Find the if/else block that uses hashVar
-				string afterHash = text.Substring(hashLineEnd);
-				if (!afterHash.TrimStart().StartsWith($"if ({hashVar}")) {
-					match = HashAssignment.Match(text, hashLineEnd);
-					continue;
+					// Find the containing scope (the { } block this hash assignment is inside)
+					int scopeStart, scopeEnd;
+					if (!FindContainingScope(text, match.Index, out scopeStart, out scopeEnd)) {
+						match = match.NextMatch();
+						continue;
+					}
+
+					// Verify next statement is an if using hashVar
+					string afterHash = text.Substring(hashLineEnd, scopeEnd - hashLineEnd);
+					if (!afterHash.TrimStart().StartsWith($"if ({hashVar}")) {
+						match = match.NextMatch();
+						continue;
+					}
+
+					// Find the if/else tree end
+					int treeStart = hashLineEnd;
+					int treeEnd = FindIfElseTreeEnd(text, treeStart, scopeEnd);
+					if (treeEnd < 0 || treeEnd > scopeEnd) {
+						match = match.NextMatch();
+						continue;
+					}
+
+					// Extract cases from the if/else tree
+					string treeText = text.Substring(treeStart, treeEnd - treeStart);
+					var cases = ExtractCases(treeText, switchVar);
+					if (cases.Count < 2) {
+						match = match.NextMatch();
+						continue;
+					}
+
+					// Collect all goto targets referenced by cases
+					var caseTargets = new HashSet<string>();
+					string? defaultTarget = null;
+					foreach (var c in cases)
+						caseTargets.Add(c.gotoTarget);
+
+					// Find default target — scan the tree for gotos that aren't case targets
+					foreach (Match g in GotoStmt.Matches(treeText)) {
+						string label = g.Groups[1].Value;
+						if (!caseTargets.Contains(label)) {
+							// This is likely the default fallthrough
+							// But only if it's not the end label
+							defaultTarget ??= label;
+						}
+					}
+
+					// Find labeled blocks WITHIN the containing scope only
+					string scopeText = text.Substring(treeEnd, scopeEnd - treeEnd);
+					var labelBodies = ExtractLabelBodies(scopeText, caseTargets, defaultTarget, out int labelsConsumed);
+
+					// Find end label (the label all cases goto at the end)
+					string? endLabel = FindEndLabel(labelBodies);
+
+					// Build switch
+					string switchText = BuildSwitch(indent, switchVar, cases, labelBodies, defaultTarget, endLabel);
+
+					// Replace: hash assignment + if/else tree + label blocks
+					int replaceStart = hashLineStart;
+					int replaceEnd = treeEnd + labelsConsumed;
+
+					// Safety: don't go past the scope end
+					if (replaceEnd > scopeEnd)
+						replaceEnd = treeEnd;
+
+					text = text.Substring(0, replaceStart) + switchText + text.Substring(replaceEnd);
+					changed = true;
+					break;
 				}
-
-				// Find the extent of the if/else tree by looking for the first non-nested
-				// statement after the tree that uses hashVar comparisons
-				int treeStart = hashLineEnd;
-				int treeEnd = FindHashSwitchTreeEnd(text, treeStart, hashVar);
-				if (treeEnd < 0) {
-					match = HashAssignment.Match(text, hashLineEnd);
-					continue;
-				}
-
-				// Extract string literals and their goto targets from the if/else tree
-				string treeText = text.Substring(treeStart, treeEnd - treeStart);
-				var cases = ExtractCasesFromTree(treeText, switchVar);
-				if (cases.Count < 2) {
-					match = HashAssignment.Match(text, hashLineEnd);
-					continue;
-				}
-
-				// Find the labeled target blocks after the tree
-				string afterTree = text.Substring(treeEnd);
-				var labelBodies = ExtractLabelBodies(afterTree, cases, out int labelsEnd);
-
-				// Find the "continue" label (end label that all cases goto)
-				string? endLabel = FindEndLabel(labelBodies);
-
-				// Build the switch statement
-				string switchText = BuildSwitchStatement(indent, switchVar, cases, labelBodies, endLabel);
-
-				// Determine what to replace:
-				// - The hash assignment line
-				// - The if/else tree
-				// - The labeled goto target blocks
-				int replaceStart = hashLineStart;
-				int replaceEnd = treeEnd + labelsEnd;
-
-				// Check for "continue;" after labels (in foreach loops)
-				string remaining = text.Substring(replaceEnd).TrimStart();
-				if (remaining.StartsWith("continue;")) {
-					// The "continue;" is part of the foreach flow, keep it
-				}
-
-				text = text.Substring(0, replaceStart) + switchText + text.Substring(replaceEnd);
-
-				// Restart search from after the inserted switch
-				match = HashAssignment.Match(text, replaceStart + switchText.Length);
 			}
 
 			return text;
 		}
 
 		/// <summary>
-		/// Find the end of the hash-switch if/else tree by tracking brace depth.
-		/// The tree ends when we reach a labeled statement (IL_XXXX:) or a statement
-		/// at the same indentation level that isn't part of the if/else chain.
+		/// Find the enclosing { } scope for a position. Returns the positions of { and }.
+		/// This ensures we never consume past method/foreach/class boundaries.
 		/// </summary>
-		static int FindHashSwitchTreeEnd(string text, int start, string hashVar) {
-			// Find the opening if statement
-			int i = start;
-			while (i < text.Length && char.IsWhiteSpace(text[i])) i++;
+		static bool FindContainingScope(string text, int pos, out int scopeStart, out int scopeEnd) {
+			scopeStart = -1;
+			scopeEnd = -1;
 
-			if (i >= text.Length || !text.Substring(i).StartsWith("if ("))
+			// Walk backwards to find the nearest unmatched {
+			int depth = 0;
+			for (int i = pos - 1; i >= 0; i--) {
+				if (text[i] == '}') depth++;
+				else if (text[i] == '{') {
+					if (depth == 0) { scopeStart = i; break; }
+					depth--;
+				}
+			}
+			if (scopeStart < 0) return false;
+
+			// Walk forward from scopeStart to find the matching }
+			depth = 0;
+			bool inStr = false, escaped = false;
+			for (int i = scopeStart; i < text.Length; i++) {
+				char c = text[i];
+				if (escaped) { escaped = false; continue; }
+				if (c == '\\' && inStr) { escaped = true; continue; }
+				if (c == '"') inStr = !inStr;
+				if (inStr) continue;
+				if (c == '{') depth++;
+				else if (c == '}') { depth--; if (depth == 0) { scopeEnd = i; return true; } }
+			}
+			return false;
+		}
+
+		/// <summary>
+		/// Find the end of the outermost if/else chain starting at the given position.
+		/// </summary>
+		static int FindIfElseTreeEnd(string text, int start, int maxEnd) {
+			int i = start;
+			while (i < maxEnd && char.IsWhiteSpace(text[i])) i++;
+
+			if (i >= maxEnd || !text.Substring(i, Math.Min(4, maxEnd - i)).StartsWith("if ("))
 				return -1;
 
-			// Track brace depth to find the end of the outermost if/else
 			int depth = 0;
-			bool foundFirstBrace = false;
-			bool inString = false;
-			bool escaped = false;
+			bool foundBrace = false;
+			bool inStr = false, escaped = false;
 
-			for (int j = i; j < text.Length; j++) {
+			for (int j = i; j < maxEnd; j++) {
 				char c = text[j];
-
 				if (escaped) { escaped = false; continue; }
-				if (c == '\\' && inString) { escaped = true; continue; }
-				if (c == '"') inString = !inString;
-				if (inString) continue;
+				if (c == '\\' && inStr) { escaped = true; continue; }
+				if (c == '"') inStr = !inStr;
+				if (inStr) continue;
 
-				if (c == '{') {
-					depth++;
-					foundFirstBrace = true;
-				}
+				if (c == '{') { depth++; foundBrace = true; }
 				else if (c == '}') {
 					depth--;
-					if (foundFirstBrace && depth == 0) {
-						// Check if followed by "else"
+					if (foundBrace && depth == 0) {
 						int afterBrace = j + 1;
-						while (afterBrace < text.Length && (text[afterBrace] == '\r' || text[afterBrace] == '\n' || text[afterBrace] == ' ' || text[afterBrace] == '\t'))
+						while (afterBrace < maxEnd && (text[afterBrace] == '\r' || text[afterBrace] == '\n' || text[afterBrace] == ' ' || text[afterBrace] == '\t'))
 							afterBrace++;
-						if (afterBrace + 4 < text.Length && text.Substring(afterBrace, 4) == "else") {
-							// Continue — there's an else clause
+						// Check for "else"
+						if (afterBrace + 4 < maxEnd && text.Substring(afterBrace, 4) == "else")
 							continue;
-						}
-						// End of the if/else tree
 						int end = j + 1;
-						while (end < text.Length && (text[end] == '\r' || text[end] == '\n'))
+						while (end < maxEnd && (text[end] == '\r' || text[end] == '\n'))
 							end++;
 						return end;
 					}
 				}
 			}
-
 			return -1;
 		}
 
 		/// <summary>
-		/// Extract case labels and their goto targets from the hash-switch if/else tree.
+		/// Extract string case labels and their goto targets from the if/else tree text.
 		/// </summary>
-		static List<(string literal, string gotoTarget)> ExtractCasesFromTree(string treeText, string switchVar) {
+		static List<(string literal, string gotoTarget)> ExtractCases(string treeText, string switchVar) {
 			var cases = new List<(string literal, string gotoTarget)>();
+			var lines = treeText.Split('\n');
 
-			// Find all string.Equals checks with their associated goto targets
-			// Pattern: if (!string.Equals(name, "LITERAL", ...)) { goto DEFAULT; } goto CASE;
-			// or inline: string.Equals(name, "LITERAL", ...) followed by goto
-			var equalsMatches = StringEqualsCheck.Matches(treeText);
-			foreach (Match em in equalsMatches) {
-				string literal = em.Groups[1].Value;
+			for (int i = 0; i < lines.Length; i++) {
+				string line = lines[i].Trim();
 
-				// Find the goto that follows a successful string.Equals match
-				// The pattern is: if (!string.Equals(...)) { goto X; } FALLTHROUGH
-				// where FALLTHROUGH is either: goto CASE_LABEL; or a direct statement
-				// OR: if (string.Equals(...)) { goto CASE_LABEL; }
+				// Look for: if (!string.Equals(name, "LITERAL", ...))
+				var eqMatch = StringEqualsLiteral.Match(line);
+				if (!eqMatch.Success) continue;
 
-				// Look at context around this match to determine the case target
-				int pos = em.Index + em.Length;
-				string afterEquals = treeText.Substring(pos);
+				string literal = eqMatch.Groups[1].Value;
+				bool negated = line.Contains("!");
 
-				// Check if this is a negated check: !string.Equals(...)
-				int beforeEquals = em.Index;
-				string beforeText = treeText.Substring(Math.Max(0, beforeEquals - 10), Math.Min(10, beforeEquals));
-				bool isNegated = beforeText.Contains("!");
-
-				if (isNegated) {
-					// Pattern: if (!string.Equals(name, "LIT")) { goto DEFAULT; } goto CASE;
-					// or:      if (!string.Equals(name, "LIT")) { goto DEFAULT; }
-					// followed by a fallthrough statement (which may be a goto or an inline body)
-
-					// Find the goto inside the if-true block (this is the DEFAULT/fallthrough target)
-					var ifBodyGoto = GotoLabel.Match(afterEquals);
-
-					// Find the next goto AFTER the if block (this is the CASE target)
-					// Skip past the closing brace of the if block
-					int closeBrace = afterEquals.IndexOf('}');
-					if (closeBrace >= 0) {
-						string afterIfBlock = afterEquals.Substring(closeBrace + 1);
-						var caseGoto = GotoLabel.Match(afterIfBlock);
-						if (caseGoto.Success) {
-							cases.Add((literal, caseGoto.Groups[1].Value));
-							continue;
+				if (negated) {
+					// Pattern: if (!string.Equals(name, "LIT")) { goto DEFAULT; }
+					// The case target is a goto on a subsequent line (fallthrough)
+					// Look ahead for a standalone goto
+					for (int j = i + 1; j < lines.Length && j <= i + 5; j++) {
+						string nextLine = lines[j].Trim();
+						if (nextLine.StartsWith("goto ")) {
+							var gm = GotoStmt.Match(nextLine);
+							if (gm.Success) {
+								cases.Add((literal, gm.Groups[1].Value));
+								break;
+							}
 						}
-					}
-
-					// No goto after the if block — the case body is inline (falls through to the next statement)
-					// This happens when the case is the last before a direct assignment
-					// e.g., if (!string.Equals(name, "String")) { goto DEFAULT; }
-					//        gridEXColumn.DefaultValue = "";
-					// In this case, we need to find what statement follows and extract it as inline
-					// For now, mark as inline case with special target
-					if (ifBodyGoto.Success) {
-						// The fallthrough after the if block is the "success" path
-						// We'll mark it with a special inline marker
-						cases.Add((literal, "__INLINE__"));
+						// If we hit another if, this goto is embedded differently
+						if (nextLine.StartsWith("if (") || nextLine.StartsWith("else"))
+							break;
 					}
 				}
 				else {
-					// Positive check: if (string.Equals(name, "LIT")) { goto CASE; }
-					var caseGoto = GotoLabel.Match(afterEquals);
-					if (caseGoto.Success) {
-						cases.Add((literal, caseGoto.Groups[1].Value));
+					// Pattern: if (string.Equals(name, "LIT")) { goto CASE; }
+					// The goto is inside the if block
+					for (int j = i; j < lines.Length && j <= i + 3; j++) {
+						var gm = GotoStmt.Match(lines[j]);
+						if (gm.Success) {
+							cases.Add((literal, gm.Groups[1].Value));
+							break;
+						}
 					}
 				}
 			}
@@ -251,79 +264,90 @@ namespace dnSpy.Decompiler.MSBuild {
 		}
 
 		/// <summary>
-		/// Extract labeled statement blocks that follow the if/else tree.
-		/// These are the goto targets containing case bodies.
+		/// Extract labeled statement blocks, bounded within the scope text.
+		/// Only consumes labels that are goto targets of the hash-switch.
 		/// </summary>
-		static Dictionary<string, string> ExtractLabelBodies(string text, List<(string literal, string gotoTarget)> cases, out int consumedLength) {
+		static Dictionary<string, string> ExtractLabelBodies(string scopeText,
+			HashSet<string> caseTargets, string? defaultTarget, out int consumed) {
+
 			var bodies = new Dictionary<string, string>();
-			var neededLabels = new HashSet<string>();
-			foreach (var c in cases) {
-				if (c.gotoTarget != "__INLINE__")
-					neededLabels.Add(c.gotoTarget);
-			}
+			consumed = 0;
 
-			consumedLength = 0;
-			var labelMatch = LabelDef.Match(text);
+			var allTargets = new HashSet<string>(caseTargets);
+			if (defaultTarget != null)
+				allTargets.Add(defaultTarget);
 
-			// Collect all label positions
-			var labels = new List<(int start, string name, string indent)>();
-			while (labelMatch.Success) {
-				labels.Add((labelMatch.Index, labelMatch.Groups[2].Value, labelMatch.Groups[1].Value));
-				labelMatch = labelMatch.NextMatch();
+			// Find all labels in scopeText
+			var labels = new List<(int pos, string name, int lineEnd)>();
+			foreach (Match m in LabelLine.Matches(scopeText)) {
+				string name = m.Groups[2].Value;
+				int lineEnd = m.Index + m.Length;
+				labels.Add((m.Index, name, lineEnd));
 			}
 
 			if (labels.Count == 0)
 				return bodies;
 
-			// Extract body for each label (from label to next label or end of relevant section)
+			// Only process labels that are targets of our hash-switch
 			for (int i = 0; i < labels.Count; i++) {
-				string labelName = labels[i].name;
-				int bodyStart = labels[i].start + LabelDef.Match(text, labels[i].start).Length;
-				while (bodyStart < text.Length && (text[bodyStart] == '\r' || text[bodyStart] == '\n'))
-					bodyStart++;
+				if (!allTargets.Contains(labels[i].name))
+					continue;
 
-				int bodyEnd;
+				int bodyStart = labels[i].lineEnd;
+
+				// Body extends until the next label or a line starting with } at same/lower indent
+				int bodyEnd = bodyStart;
 				if (i + 1 < labels.Count)
-					bodyEnd = labels[i + 1].start;
+					bodyEnd = labels[i + 1].pos;
 				else {
-					// Last label — find end by looking for the next non-labeled, non-goto statement
-					bodyEnd = text.Length;
+					// Last label — find end by looking for end of statement(s)
+					// Stop at next label, or at closing brace at depth 0, or at end
+					int j = bodyStart;
+					while (j < scopeText.Length) {
+						if (scopeText[j] == '\n') {
+							int nextLineStart = j + 1;
+							string nextLine = "";
+							int k = nextLineStart;
+							while (k < scopeText.Length && scopeText[k] != '\n')
+								k++;
+							if (k > nextLineStart)
+								nextLine = scopeText.Substring(nextLineStart, k - nextLineStart).Trim();
+
+							// Stop if we hit a non-label, non-goto, non-empty line that looks like
+							// regular code (not part of a label body)
+							if (nextLine.Length > 0 && !nextLine.StartsWith("goto ") &&
+								!nextLine.StartsWith("IL_") && !nextLine.StartsWith("//") &&
+								!nextLine.EndsWith(";"))
+								break;
+						}
+						j++;
+					}
+					bodyEnd = j;
 				}
 
-				string body = text.Substring(bodyStart, bodyEnd - bodyStart).Trim();
+				string body = scopeText.Substring(bodyStart, bodyEnd - bodyStart).Trim();
 
-				// Remove trailing "goto IL_XXXX;" from the body (this is the goto to the end label)
-				var trailingGoto = GotoLabel.Match(body);
-				if (trailingGoto.Success && body.EndsWith(trailingGoto.Value)) {
-					body = body.Substring(0, body.Length - trailingGoto.Value.Length).TrimEnd();
-					// Track what the end label is
+				// Remove trailing goto (to end label)
+				var trailingGoto = GotoStmt.Match(body);
+				if (trailingGoto.Success) {
+					int gotoStart = body.LastIndexOf("goto ");
+					if (gotoStart >= 0)
+						body = body.Substring(0, gotoStart).Trim();
 				}
 
-				bodies[labelName] = body;
-
-				if (neededLabels.Contains(labelName) || i == labels.Count - 1)
-					consumedLength = Math.Max(consumedLength, bodyEnd);
+				bodies[labels[i].name] = body;
+				consumed = Math.Max(consumed, bodyEnd);
 			}
 
-			// Find the furthest consumed position including the last label's end
-			if (labels.Count > 0) {
-				int lastLabelEnd = labels[labels.Count - 1].start;
-				// Find end of last label block
-				var lastMatch = LabelDef.Match(text, lastLabelEnd);
-				if (lastMatch.Success) {
-					int end = lastMatch.Index + lastMatch.Length;
-					// Include all statements until the next non-label line at lower indent
-					while (end < text.Length) {
-						int lineEnd = text.IndexOf('\n', end);
-						if (lineEnd < 0) lineEnd = text.Length;
-						string line = text.Substring(end, lineEnd - end).Trim();
-						if (line.Length == 0 || GotoLabel.IsMatch(line) || line.EndsWith(";")) {
-							end = lineEnd + 1;
-							continue;
-						}
-						break;
-					}
-					consumedLength = Math.Max(consumedLength, end);
+			// Also consume the end label line itself if it exists
+			foreach (var label in labels) {
+				if (!allTargets.Contains(label.name) && label.pos >= consumed - 10) {
+					// This might be the end label — consume it too
+					int lineEnd = label.lineEnd;
+					while (lineEnd < scopeText.Length && (scopeText[lineEnd] == '\r' || scopeText[lineEnd] == '\n'))
+						lineEnd++;
+					consumed = Math.Max(consumed, lineEnd);
+					break;
 				}
 			}
 
@@ -331,79 +355,56 @@ namespace dnSpy.Decompiler.MSBuild {
 		}
 
 		/// <summary>
-		/// Find the common end label that all case bodies goto.
+		/// Find the end label — the label most cases goto (after their body).
 		/// </summary>
 		static string? FindEndLabel(Dictionary<string, string> labelBodies) {
-			// Count which labels are referenced as goto targets from other labels
-			var targetCounts = new Dictionary<string, int>();
-			foreach (var body in labelBodies.Values) {
-				var gotoMatch = GotoLabel.Match(body);
-				// Check the ORIGINAL body (before we stripped trailing gotos)
-				// Actually we already stripped them. The end label is the one that all bodies goto.
-			}
-			return null; // We already stripped trailing gotos during extraction
+			// The end label is typically the one NOT in labelBodies as a key
+			// but referenced by goto in the bodies
+			return null;
 		}
 
 		/// <summary>
-		/// Build a switch statement from extracted cases and label bodies.
+		/// Build a switch statement text from cases and label bodies.
 		/// </summary>
-		static string BuildSwitchStatement(string indent, string switchVar,
+		static string BuildSwitch(string indent, string switchVar,
 			List<(string literal, string gotoTarget)> cases,
-			Dictionary<string, string> labelBodies, string? endLabel) {
+			Dictionary<string, string> labelBodies,
+			string? defaultTarget, string? endLabel) {
 
 			var sb = new StringBuilder();
 			sb.AppendLine($"{indent}switch ({switchVar})");
 			sb.AppendLine($"{indent}{{");
 
-			// Group cases by target label
+			// Group cases by goto target
 			var groups = new Dictionary<string, List<string>>();
-			var inlineCases = new List<string>();
-			string? defaultTarget = null;
-
 			foreach (var c in cases) {
-				if (c.gotoTarget == "__INLINE__") {
-					inlineCases.Add(c.literal);
-					continue;
-				}
 				if (!groups.ContainsKey(c.gotoTarget))
 					groups[c.gotoTarget] = new List<string>();
 				groups[c.gotoTarget].Add(c.literal);
 			}
 
-			// Find the default target — it's the label that's NOT a case target
-			// (referenced by goto in the if-else tree but not associated with any string.Equals)
-			foreach (var label in labelBodies.Keys) {
-				if (!groups.ContainsKey(label)) {
-					defaultTarget = label;
-				}
-			}
-
-			// Emit each case group
 			foreach (var group in groups) {
-				foreach (var literal in group.Value)
-					sb.AppendLine($"{indent}\tcase \"{literal}\":");
+				foreach (var lit in group.Value)
+					sb.AppendLine($"{indent}\tcase \"{lit}\":");
 
-				string body = labelBodies.ContainsKey(group.Key) ? labelBodies[group.Key] : "";
-				if (!string.IsNullOrWhiteSpace(body)) {
-					// Indent the body
+				if (labelBodies.TryGetValue(group.Key, out string? body) && !string.IsNullOrWhiteSpace(body)) {
 					foreach (var line in body.Split('\n')) {
-						string trimmed = line.TrimEnd('\r');
-						if (trimmed.Trim().Length > 0)
-							sb.AppendLine($"{indent}\t\t{trimmed.Trim()}");
+						string trimmed = line.TrimEnd('\r').Trim();
+						if (trimmed.Length > 0)
+							sb.AppendLine($"{indent}\t\t{trimmed}");
 					}
 				}
 				sb.AppendLine($"{indent}\t\tbreak;");
 			}
 
-			// Emit default case
-			if (defaultTarget != null && labelBodies.ContainsKey(defaultTarget)) {
+			// Default case
+			if (defaultTarget != null) {
 				sb.AppendLine($"{indent}\tdefault:");
-				string body = labelBodies[defaultTarget];
-				if (!string.IsNullOrWhiteSpace(body)) {
+				if (labelBodies.TryGetValue(defaultTarget, out string? body) && !string.IsNullOrWhiteSpace(body)) {
 					foreach (var line in body.Split('\n')) {
-						string trimmed = line.TrimEnd('\r');
-						if (trimmed.Trim().Length > 0)
-							sb.AppendLine($"{indent}\t\t{trimmed.Trim()}");
+						string trimmed = line.TrimEnd('\r').Trim();
+						if (trimmed.Length > 0)
+							sb.AppendLine($"{indent}\t\t{trimmed}");
 					}
 				}
 				sb.AppendLine($"{indent}\t\tbreak;");
@@ -411,6 +412,13 @@ namespace dnSpy.Decompiler.MSBuild {
 
 			sb.AppendLine($"{indent}}}");
 			return sb.ToString();
+		}
+
+		static int FindLineStart(string text, int pos) {
+			int i = pos - 1;
+			while (i >= 0 && text[i] != '\n')
+				i--;
+			return i + 1;
 		}
 	}
 }

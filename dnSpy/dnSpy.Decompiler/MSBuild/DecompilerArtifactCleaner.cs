@@ -75,8 +75,9 @@ namespace dnSpy.Decompiler.MSBuild {
 			result = ReplacePrivateImplementationDetails(result);
 			result = ClosureInliner.InlineAll(result);
 			result = EnumeratorDisposalCleaner.CleanAll(result);
-			// HashSwitchReconstructor disabled — needs label boundary detection fix
-			// result = HashSwitchReconstructor.ReconstructAll(result);
+			var (roslynResult, roslynCount) = RoslynHashSwitchRewriter.Rewrite(result);
+			if (roslynCount > 0)
+				result = roslynResult;
 
 			if (!string.Equals(original, result, StringComparison.Ordinal))
 				File.WriteAllText(filePath, result, new UTF8Encoding(true));

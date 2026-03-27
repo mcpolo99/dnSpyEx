@@ -20,6 +20,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -53,6 +54,7 @@ namespace dnSpy.Decompiler.MSBuild {
 			{ "Conversions.ToUInteger(", "Convert.ToUInt32(" },
 			{ "Conversions.ToUShort(", "Convert.ToUInt16(" },
 			{ "Conversions.ToULong(", "Convert.ToUInt64(" },
+			{ "Conversions.ToString(", "Convert.ToString(" },
 		};
 
 		public static void CleanFile(string filePath) {
@@ -73,8 +75,12 @@ namespace dnSpy.Decompiler.MSBuild {
 			result = ReplaceCompareString(result);
 			result = ReplaceConversions(result);
 			result = ReplacePrivateImplementationDetails(result);
-			result = ClosureInliner.InlineAll(result);
+			result = ClosureInliner.InlineAll(result);         // Must run BEFORE SanitizeVBIdentifiers (needs literal $)
 			result = EnumeratorDisposalCleaner.CleanAll(result);
+			result = SanitizeVBIdentifiers(result);             // Runs AFTER closure inlining cleans up $ patterns
+			result = FixPrivateVirtualMembers(result);
+			result = FixPropertyInitializers(result);
+			result = FixMangledExplicitInterfaces(result);
 			var (roslynResult, roslynCount) = RoslynHashSwitchRewriter.Rewrite(result);
 			if (roslynCount > 0)
 				result = roslynResult;
@@ -281,5 +287,188 @@ namespace dnSpy.Decompiler.MSBuild {
 			endPos = i;
 			return arg.Length > 0;
 		}
+
+		// ─── VB.NET Identifier Sanitization ──────────────────────────────────────
+		// The decompiler emits literal $ in identifiers from VB.NET assemblies.
+		// These are invalid in C# and must be renamed to compile.
+
+		// VB.NET anonymous iterator variables: _VB$ItAnonymous, _VB$It, _VB$Me
+		static readonly Regex VBIteratorVar = new Regex(
+			@"_VB\$(\w+)", RegexOptions.Compiled);
+
+		// VB$AnonymousType_N class names
+		static readonly Regex VBAnonymousType = new Regex(
+			@"VB\$AnonymousType_(\d+)", RegexOptions.Compiled);
+
+		// VB$AnonymousDelegate_N
+		static readonly Regex VBAnonymousDelegate = new Regex(
+			@"VB\$AnonymousDelegate_(\d+)", RegexOptions.Compiled);
+
+		// $STATIC$MethodName$Number$FieldName — VB.NET static local fields
+		static readonly Regex VBStaticLocal = new Regex(
+			@"\$STATIC\$(\w+)\$(\w+)\$(\w+)", RegexOptions.Compiled);
+
+		// Remaining standalone $identifier (not inside string literals)
+		// Matches field declarations like "T0 $Code" or "this.$field"
+		static readonly Regex DollarIdentifier = new Regex(
+			@"(?<![""\\])\$(\w+)", RegexOptions.Compiled);
+
+		// __StaticArrayInitTypeSize=N → StaticArray_N
+		static readonly Regex StaticArrayType = new Regex(
+			@"__StaticArrayInitTypeSize=(\d+)", RegexOptions.Compiled);
+
+		// Hex hash field names starting with digit (from PrivateImplementationDetails)
+		static readonly Regex HexHashField = new Regex(
+			@"(?<=\s)([0-9A-Fa-f]{8,})\b", RegexOptions.Compiled);
+
+		/// <summary>
+		/// Sanitize VB.NET compiler-generated identifiers that contain $ and other
+		/// characters invalid in C#. This runs BEFORE closure inlining so that
+		/// the inliner sees clean identifiers.
+		/// </summary>
+		// Dashes in compiler-generated identifiers: _Lambda___143-2 → _Lambda___143_2, _I132-0 → _I132_0
+		static readonly Regex DashInIdentifier = new Regex(
+			@"(?<=\w)-(?=\d)", RegexOptions.Compiled);
+
+		static string SanitizeVBIdentifiers(string text) {
+			bool hasDollar = text.IndexOf('$') >= 0;
+			bool hasStaticArray = text.IndexOf("__StaticArrayInitTypeSize=", StringComparison.Ordinal) >= 0;
+			bool hasDashId = DashInIdentifier.IsMatch(text);
+
+			if (!hasDollar && !hasStaticArray && !hasDashId)
+				return text;
+
+			// Order matters — more specific patterns first
+			text = VBStaticLocal.Replace(text, "STATIC_$1_$2_$3");
+			text = VBAnonymousType.Replace(text, "VBAnonymousType_$1");
+			text = VBAnonymousDelegate.Replace(text, "VBAnonymousDelegate_$1");
+			text = VBIteratorVar.Replace(text, "vb$1");
+			text = StaticArrayType.Replace(text, "StaticArray_$1");
+
+			// Fix remaining $ in identifiers — replace with underscore
+			// But skip $ inside string literals
+			text = ReplaceDollarOutsideStrings(text);
+
+			// Fix dashes in compiler-generated identifiers (e.g., _Lambda___143-2 → _Lambda___143_2)
+			text = DashInIdentifier.Replace(text, "_");
+
+			// Fix hex hash fields that start with digits (invalid C# identifiers)
+			text = HexHashField.Replace(text, m => {
+				// Only prefix if it looks like a standalone field name (all hex, >= 8 chars)
+				string val = m.Value;
+				if (val.Length >= 32 && val.All(c => (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f')))
+					return "_" + val;
+				return val;
+			});
+
+			return text;
+		}
+
+		/// <summary>
+		/// Replace $ with _ in identifiers, but skip $ inside string/char literals.
+		/// </summary>
+		static string ReplaceDollarOutsideStrings(string text) {
+			if (text.IndexOf('$') < 0)
+				return text;
+
+			var sb = new StringBuilder(text.Length);
+			bool inString = false;
+			bool inVerbatim = false;
+			bool inChar = false;
+
+			for (int i = 0; i < text.Length; i++) {
+				char c = text[i];
+
+				if (inString) {
+					sb.Append(c);
+					if (c == '\\' && !inVerbatim && i + 1 < text.Length) {
+						sb.Append(text[++i]); // skip escaped char
+					}
+					else if (c == '"') {
+						if (inVerbatim && i + 1 < text.Length && text[i + 1] == '"') {
+							sb.Append(text[++i]); // "" escape in verbatim
+						}
+						else {
+							inString = false;
+							inVerbatim = false;
+						}
+					}
+					continue;
+				}
+
+				if (inChar) {
+					sb.Append(c);
+					if (c == '\\' && i + 1 < text.Length)
+						sb.Append(text[++i]);
+					else if (c == '\'')
+						inChar = false;
+					continue;
+				}
+
+				if (c == '"') {
+					inString = true;
+					inVerbatim = (i > 0 && text[i - 1] == '@');
+					sb.Append(c);
+				}
+				else if (c == '\'') {
+					inChar = true;
+					sb.Append(c);
+				}
+				else if (c == '$') {
+					sb.Append('_');
+				}
+				else {
+					sb.Append(c);
+				}
+			}
+			return sb.ToString();
+		}
+
+		// ─── Private Virtual Fix ─────────────────────────────────────────────────
+		// VB.NET decompiles override members as "private virtual" which is illegal in C#.
+
+		static readonly Regex PrivateVirtual = new Regex(
+			@"(\t+)private virtual ",
+			RegexOptions.Compiled);
+
+		static string FixPrivateVirtualMembers(string text) {
+			if (text.IndexOf("private virtual ", StringComparison.Ordinal) < 0)
+				return text;
+			return PrivateVirtual.Replace(text, "$1protected virtual ");
+		}
+
+		// ─── Property Initializer Fix ────────────────────────────────────────────
+		// Decompiler generates "} = null;" on non-auto properties, which is invalid.
+
+		static readonly Regex PropertyInitializerNull = new Regex(
+			@"\}\s*=\s*null;",
+			RegexOptions.Compiled);
+
+		static string FixPropertyInitializers(string text) {
+			if (text.IndexOf("} = null;", StringComparison.Ordinal) < 0)
+				return text;
+			return PropertyInitializerNull.Replace(text, "}");
+		}
+
+		// ─── Mangled Explicit Interface Fix ──────────────────────────────────────
+		// VB.NET explicit interface implementations get mangled names:
+		//   NotifyScope1 → NotifyScope
+		//   Classes1 → Classes
+		//   IEnumerable_GetEnumerator → System.Collections.IEnumerable.GetEnumerator
+
+		static readonly Regex MangledNotifyScope = new Regex(
+			@"(Interfaces\.IPickingList\.)NotifyScope1\b",
+			RegexOptions.Compiled);
+
+		static readonly Regex MangledIEnumerable = new Regex(
+			@"IEnumerable_GetEnumerator\(\)",
+			RegexOptions.Compiled);
+
+		static string FixMangledExplicitInterfaces(string text) {
+			text = MangledNotifyScope.Replace(text, "$1NotifyScope");
+			text = MangledIEnumerable.Replace(text, "System.Collections.IEnumerable.GetEnumerator()");
+			return text;
+		}
+
 	}
 }

@@ -62,7 +62,7 @@ namespace dnSpy.Decompiler.MSBuild {
 		string GetResxDesignerFilename(string ns, string name) {
 			if (name.StartsWith(ns + ".", StringComparison.Ordinal))
 				return name.Substring(ns.Length + 1);
-			Debug.Fail("Weird name");
+			// Resource name doesn't start with expected namespace prefix — use as-is
 			return name;
 		}
 

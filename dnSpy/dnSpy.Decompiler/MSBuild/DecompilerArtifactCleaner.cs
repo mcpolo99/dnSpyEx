@@ -68,7 +68,8 @@ namespace dnSpy.Decompiler.MSBuild {
 			var original = File.ReadAllText(filePath, Encoding.UTF8);
 			var result = original;
 
-			result = TokenComment.Replace(result, "");
+			// Keep token comments — they contain metadata (Token/RID/RVA/offset)
+			// useful for correlating decompiled code with IL.
 			result = SimpleAttribute.Replace(result, "");
 			result = ParameterizedAttribute.Replace(result, "");
 			result = StripGlobalPrefix(result);
